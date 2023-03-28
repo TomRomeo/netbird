@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	gstatus "google.golang.org/grpc/status"
 
 	log "github.com/sirupsen/logrus"
@@ -20,9 +21,11 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/cenkalti/backoff/v4"
+
 	"github.com/netbirdio/netbird/client/system"
 	"github.com/netbirdio/netbird/encryption"
 	"github.com/netbirdio/netbird/management/proto"
+	"github.com/netbirdio/netbird/version"
 )
 
 // ConnStateNotifier is a wrapper interface of the status recorders
@@ -65,6 +68,9 @@ func NewClient(ctx context.Context, addr string, ourPrivateKey wgtypes.Key, tlsE
 	}
 
 	realClient := proto.NewManagementServiceClient(conn)
+
+	md := metadata.Pairs("version", version.NetbirdVersion())
+	ctx = metadata.NewOutgoingContext(ctx, md)
 
 	return &GrpcClient{
 		key:                   ourPrivateKey,
@@ -130,6 +136,7 @@ func (c *GrpcClient) Sync(msgHandler func(msg *proto.SyncResponse) error) error 
 
 		ctx, cancelStream := context.WithCancel(c.ctx)
 		defer cancelStream()
+
 		stream, err := c.connectToStream(ctx, *serverPubKey)
 		if err != nil {
 			log.Debugf("failed to open Management Service stream: %s", err)
@@ -196,6 +203,10 @@ func (c *GrpcClient) receiveEvents(stream proto.ManagementService_SyncClient, se
 		if err != nil {
 			log.Debugf("disconnected from Management Service sync stream: %v", err)
 			return err
+		}
+
+		if c.isKeepAliveMsg(update.Body) {
+			continue
 		}
 
 		log.Debugf("got an update message from Management Service")
@@ -336,6 +347,10 @@ func (c *GrpcClient) notifyConnected() {
 		return
 	}
 	c.connStateCallback.MarkManagementConnected()
+}
+
+func (c *GrpcClient) isKeepAliveMsg(body []byte) bool {
+	return len(body) == 0
 }
 
 func infoToMetaData(info *system.Info) *proto.PeerSystemMeta {

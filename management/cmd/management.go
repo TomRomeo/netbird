@@ -19,25 +19,27 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/miekg/dns"
+	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
+
 	"github.com/netbirdio/netbird/management/server/activity/sqlite"
 	httpapi "github.com/netbirdio/netbird/management/server/http"
 	"github.com/netbirdio/netbird/management/server/metrics"
 	"github.com/netbirdio/netbird/management/server/telemetry"
-	"golang.org/x/crypto/acme/autocert"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/netbirdio/netbird/management/server"
 	"github.com/netbirdio/netbird/management/server/idp"
 	"github.com/netbirdio/netbird/util"
 
-	"github.com/netbirdio/netbird/encryption"
-	mgmtProto "github.com/netbirdio/netbird/management/proto"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
+
+	"github.com/netbirdio/netbird/encryption"
+	mgmtProto "github.com/netbirdio/netbird/management/proto"
 )
 
 // ManagementLegacyPort is the port that was used before by the Management gRPC server.
@@ -190,11 +192,16 @@ var (
 				return fmt.Errorf("failed creating HTTP API handler: %v", err)
 			}
 
-			gRPCAPIHandler := grpc.NewServer(gRPCOpts...)
 			srv, err := server.NewServer(config, accountManager, peersUpdateManager, turnManager, appMetrics)
 			if err != nil {
 				return fmt.Errorf("failed creating gRPC API handler: %v", err)
 			}
+
+			ka := server.NewKeepAlive()
+			sInterc := grpc.StreamInterceptor(ka.StreamInterceptor())
+			uInterc := grpc.UnaryInterceptor(ka.UnaryInterceptor())
+			gRPCOpts = append(gRPCOpts, sInterc, uInterc)
+			gRPCAPIHandler := grpc.NewServer(gRPCOpts...)
 			mgmtProto.RegisterManagementServiceServer(gRPCAPIHandler, srv)
 
 			installationID, err := getInstallationID(store)
