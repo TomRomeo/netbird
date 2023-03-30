@@ -294,3 +294,5 @@ message NameServer {
   int64  NSType = 2;
   int64  Port = 3;
 }
+
+message KeepAlive {}
