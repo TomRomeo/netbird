@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
+	"sync"
+	"time"
+
 	"github.com/cenkalti/backoff/v4"
-	"github.com/netbirdio/netbird/encryption"
-	"github.com/netbirdio/netbird/signal/proto"
+
 	log "github.com/sirupsen/logrus"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	"google.golang.org/grpc"
@@ -17,9 +20,11 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"io"
-	"sync"
-	"time"
+
+	"github.com/netbirdio/netbird/encryption"
+	appKeepAlive "github.com/netbirdio/netbird/keepalive"
+	"github.com/netbirdio/netbird/signal/proto"
+	"github.com/netbirdio/netbird/version"
 )
 
 // ConnStateNotifier is a wrapper interface of the status recorder
@@ -69,6 +74,7 @@ func NewClient(ctx context.Context, addr string, key wgtypes.Key, tlsEnabled boo
 
 	sigCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
 	conn, err := grpc.DialContext(
 		sigCtx,
 		addr,
@@ -203,9 +209,12 @@ func (c *GrpcClient) getStreamStatusChan() <-chan struct{} {
 func (c *GrpcClient) connect(ctx context.Context, key string) (proto.SignalExchange_ConnectStreamClient, error) {
 	c.stream = nil
 
-	// add key fingerprint to the request header to be identified on the server side
-	md := metadata.New(map[string]string{proto.HeaderId: key})
+	md := metadata.New(map[string]string{
+		proto.HeaderId:                    key,                      // add key fingerprint to the request header to be identified on the server side
+		appKeepAlive.GrpcVersionHeaderKey: version.NetbirdVersion(), // add version info to ensure keep alive is supported
+	})
 	metaCtx := metadata.NewOutgoingContext(ctx, md)
+
 	stream, err := c.realClient.ConnectStream(metaCtx, grpc.WaitForReady(true))
 	c.stream = stream
 	if err != nil {
@@ -344,8 +353,13 @@ func (c *GrpcClient) receive(stream proto.SignalExchange_ConnectStreamClient,
 		} else if err != nil {
 			return err
 		}
-		log.Debugf("received a new message from Peer [fingerprint: %s]", msg.Key)
 
+		if appKeepAlive.IsKeepAliveMsg(msg.Body) {
+			log.Printf("received keepalive")
+			continue
+		}
+
+		log.Debugf("received a new message from Peer [fingerprint: %s]", msg.Key)
 		decryptedMessage, err := c.decryptMessage(msg)
 		if err != nil {
 			log.Errorf("failed decrypting message of Peer [key: %s] error: [%s]", msg.Key, err.Error())
